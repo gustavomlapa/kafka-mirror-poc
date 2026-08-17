@@ -64,10 +64,13 @@ gcloud compute ssh "${MM2_VM_NAME}" \
     --tunnel-through-iap \
     --command="sudo mv /tmp/connect-mirror-maker.properties /opt/kafka/config/connect-mirror-maker.properties && \
                sudo pkill -f 'connect-mirror-maker' || true && \
-               sudo nohup /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/connect-mirror-maker.properties > /var/log/mirrormaker.log 2>&1 &"
+               sudo bash -c 'nohup /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/connect-mirror-maker.properties > /var/log/mirrormaker.log 2>&1 &' && \
+               sleep 3 && \
+               sudo head -n 20 /var/log/mirrormaker.log || true"
 
 log_success "MirrorMaker 2.0 replication started successfully in the background!"
 
 echo ""
 log_info "To view live MirrorMaker 2 replication logs, run:"
-echo -e "${YELLOW}gcloud compute ssh ${MM2_VM_NAME} --zone=${ZONE} --project=${PROJECT_ID} --tunnel-through-iap --command=\"tail -f /var/log/mirrormaker.log\"${NC}"
+echo -e "${YELLOW}gcloud compute ssh ${MM2_VM_NAME} --zone=${ZONE} --project=${PROJECT_ID} --tunnel-through-iap --command=\"sudo tail -f /var/log/mirrormaker.log\"${NC}"
+
