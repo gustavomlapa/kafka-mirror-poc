@@ -81,6 +81,8 @@ gcloud run deploy "${PRODUCER_SERVICE_NAME}" \
     --min-instances=1 \
     --max-instances=2 \
     --port=8080 \
+    --startup-cpu-boost \
+    --timeout=300s \
     --allow-unauthenticated
 
 PRODUCER_URL=$(gcloud run services describe "${PRODUCER_SERVICE_NAME}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")
@@ -99,6 +101,8 @@ gcloud run deploy "${CONSUMER_SERVICE_NAME}" \
     --min-instances=1 \
     --max-instances=1 \
     --port=8080 \
+    --startup-cpu-boost \
+    --timeout=300s \
     --allow-unauthenticated
 
 CONSUMER_URL=$(gcloud run services describe "${CONSUMER_SERVICE_NAME}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")

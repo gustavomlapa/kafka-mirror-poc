@@ -11,18 +11,29 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-# Include parent directory in sys.path to access auth helper
+# Setup paths for resilient imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+for p in [current_dir, parent_dir]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-from auth.gcp_token_provider import confluent_oauth_callback
-from producer.mock_data import MockDataGenerator
+try:
+    from auth.gcp_token_provider import confluent_oauth_callback
+except ImportError:
+    try:
+        from gcp_token_provider import confluent_oauth_callback
+    except ImportError:
+        confluent_oauth_callback = None
+
+try:
+    from producer.mock_data import MockDataGenerator
+except ImportError:
+    from mock_data import MockDataGenerator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +52,7 @@ PORT = int(os.getenv("PORT", "8080"))
 generator = MockDataGenerator()
 producer_client = None
 stream_task: Optional[asyncio.Task] = None
+
 stats = {
     "messages_produced": 0,
     "last_produced_event": None,
@@ -52,31 +64,41 @@ stats = {
 }
 
 
-def create_kafka_producer():
-    """Initializes the confluent_kafka Producer instance with appropriate auth."""
-    from confluent_kafka import Producer
+def get_kafka_producer():
+    """Lazily initializes the confluent_kafka Producer instance with appropriate auth."""
+    global producer_client
+    if producer_client is not None:
+        return producer_client
 
-    config = {
-        "bootstrap.servers": BOOTSTRAP_SERVERS,
-        "client.id": "cloudrun-kafka-producer",
-        "acks": "all",
-        "retries": 5,
-        "retry.backoff.ms": 500,
-    }
+    try:
+        from confluent_kafka import Producer
 
-    if AUTH_TYPE == "OAUTHBEARER":
-        logger.info("Configuring SASL_SSL OAUTHBEARER authentication with GCP ADC...")
-        config.update({
-            "security.protocol": "SASL_SSL",
-            "sasl.mechanism": "OAUTHBEARER",
-            "oauth_cb": confluent_oauth_callback,
-        })
-    elif AUTH_TYPE == "PLAINTEXT":
-        logger.info("Using PLAINTEXT security protocol.")
-    else:
-        logger.warning(f"Unknown AUTH_TYPE '{AUTH_TYPE}'. Defaulting to PLAINTEXT.")
+        config = {
+            "bootstrap.servers": BOOTSTRAP_SERVERS,
+            "client.id": "cloudrun-kafka-producer",
+            "acks": "all",
+            "retries": 5,
+            "retry.backoff.ms": 500,
+            "socket.timeout.ms": 10000,
+        }
 
-    return Producer(config)
+        if AUTH_TYPE == "OAUTHBEARER":
+            logger.info("Configuring SASL_SSL OAUTHBEARER authentication with GCP ADC...")
+            config.update({
+                "security.protocol": "SASL_SSL",
+                "sasl.mechanism": "OAUTHBEARER",
+                "oauth_cb": confluent_oauth_callback,
+            })
+        elif AUTH_TYPE == "PLAINTEXT":
+            logger.info("Using PLAINTEXT security protocol.")
+
+        producer_client = Producer(config)
+        logger.info(f"Initialized Kafka Producer targeting: {BOOTSTRAP_SERVERS}")
+        return producer_client
+    except Exception as exc:
+        logger.error(f"Error creating Kafka Producer client: {exc}")
+        stats["last_error"] = str(exc)
+        return None
 
 
 def delivery_report(err, msg):
@@ -87,27 +109,27 @@ def delivery_report(err, msg):
     else:
         stats["messages_produced"] += 1
         logger.info(
-            f"Message delivered to {msg.topic()} [partition {msg.partition()}] at offset {msg.offset()}"
+            f"Message delivered to {msg.topic()} [p:{msg.partition()}] at offset {msg.offset()}"
         )
 
 
 def send_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
     """Serializes and sends an event to Kafka."""
-    global producer_client
-    if producer_client is None:
-        producer_client = create_kafka_producer()
+    client = get_kafka_producer()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Kafka producer not initialized")
 
     payload_json = json.dumps(event_data).encode("utf-8")
     key = str(event_data.get("order_id", "")).encode("utf-8")
 
     try:
-        producer_client.produce(
+        client.produce(
             topic=TOPIC_NAME,
             key=key,
             value=payload_json,
             on_delivery=delivery_report,
         )
-        producer_client.poll(0)
+        client.poll(0)
         stats["last_produced_event"] = event_data
         return {"status": "queued", "event": event_data}
     except Exception as exc:
@@ -120,16 +142,18 @@ async def background_streaming_loop():
     """Background task to continuously produce mock events at fixed intervals."""
     stats["is_streaming"] = True
     logger.info(f"Starting continuous stream to topic '{TOPIC_NAME}' every {STREAM_INTERVAL}s...")
+    # Initial sleep to ensure server is fully online and health check responded
+    await asyncio.sleep(2.0)
     try:
         while True:
             order = generator.generate_order()
             try:
                 send_event(order)
             except Exception as e:
-                logger.warning(f"Stream iteration error: {e}")
+                logger.warning(f"Stream iteration warning: {e}")
             await asyncio.sleep(STREAM_INTERVAL)
     except asyncio.CancelledError:
-        logger.info("Streaming background loop stopped.")
+        logger.info("Streaming background loop cancelled.")
     finally:
         stats["is_streaming"] = False
 
@@ -137,12 +161,8 @@ async def background_streaming_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application startup and shutdown."""
-    global producer_client, stream_task
-    try:
-        producer_client = create_kafka_producer()
-        logger.info(f"Connected producer targeting bootstrap servers: {BOOTSTRAP_SERVERS}")
-    except Exception as exc:
-        logger.error(f"Initialization warning: {exc}")
+    global stream_task
+    logger.info(f"Starting Producer Application on port {PORT}...")
 
     if AUTO_STREAM:
         stream_task = asyncio.create_task(background_streaming_loop())
@@ -158,7 +178,10 @@ async def lifespan(app: FastAPI):
 
     if producer_client:
         logger.info("Flushing Kafka producer on shutdown...")
-        producer_client.flush(timeout=5)
+        try:
+            producer_client.flush(timeout=3)
+        except Exception:
+            pass
 
 
 app = FastAPI(
@@ -200,7 +223,7 @@ def produce_events(request: ProduceRequest):
         results.append(res)
 
     if producer_client:
-        producer_client.flush(timeout=3)
+        producer_client.flush(timeout=2)
 
     return {
         "produced_count": len(results),

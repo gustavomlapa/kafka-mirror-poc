@@ -18,8 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY apps/ /app/
 
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["python", "consumer/consumer.py"]
+CMD ["python", "-m", "uvicorn", "consumer.consumer:app", "--host", "0.0.0.0", "--port", "8080"]

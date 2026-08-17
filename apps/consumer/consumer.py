@@ -10,19 +10,27 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 import uvicorn
 
-# Include parent directory in sys.path to access auth helper
+# Setup paths for resilient imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+for p in [current_dir, parent_dir]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-from auth.gcp_token_provider import confluent_oauth_callback
+try:
+    from auth.gcp_token_provider import confluent_oauth_callback
+except ImportError:
+    try:
+        from gcp_token_provider import confluent_oauth_callback
+    except ImportError:
+        confluent_oauth_callback = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +73,7 @@ def create_kafka_consumer():
         "enable.auto.commit": True,
         "auto.commit.interval.ms": 1000,
         "session.timeout.ms": 30000,
+        "socket.timeout.ms": 10000,
     }
 
     if AUTH_TYPE == "OAUTHBEARER":
@@ -76,8 +85,6 @@ def create_kafka_consumer():
         })
     elif AUTH_TYPE == "PLAINTEXT":
         logger.info("Using PLAINTEXT security protocol.")
-    else:
-        logger.warning(f"Unknown AUTH_TYPE '{AUTH_TYPE}'. Defaulting to PLAINTEXT.")
 
     return Consumer(config)
 
@@ -87,21 +94,24 @@ def run_consumer_loop():
     global consumer_running
     consumer = None
 
-    try:
-        consumer = create_kafka_consumer()
-        consumer.subscribe([TOPIC_NAME])
-        stats["is_consuming"] = True
-        logger.info(
-            f"Consumer subscribed to '{TOPIC_NAME}' with group '{GROUP_ID}' targeting {BOOTSTRAP_SERVERS}"
-        )
+    # Wait 2 seconds so FastAPI can bind to PORT and pass initial Cloud Run health checks
+    time.sleep(2)
 
-        while consumer_running:
+    while consumer_running:
+        try:
+            if consumer is None:
+                logger.info(f"Connecting Consumer to {BOOTSTRAP_SERVERS} topic '{TOPIC_NAME}'...")
+                consumer = create_kafka_consumer()
+                consumer.subscribe([TOPIC_NAME])
+                stats["is_consuming"] = True
+                logger.info(f"Consumer subscribed to '{TOPIC_NAME}' with group '{GROUP_ID}'.")
+
             msg = consumer.poll(timeout=1.0)
             if msg is None:
                 continue
 
             if msg.error():
-                logger.error(f"Consumer error received: {msg.error()}")
+                logger.error(f"Consumer message error: {msg.error()}")
                 stats["last_error"] = str(msg.error())
                 continue
 
@@ -134,20 +144,31 @@ def run_consumer_loop():
                 logger.error(f"Error parsing consumed message: {e}")
                 stats["last_error"] = str(e)
 
-    except Exception as exc:
-        logger.error(f"Fatal exception in consumer loop: {exc}")
-        stats["last_error"] = str(exc)
-    finally:
-        stats["is_consuming"] = False
-        if consumer:
-            logger.info("Closing Kafka consumer connection...")
+        except Exception as exc:
+            logger.error(f"Exception in consumer loop: {exc}. Retrying in 5 seconds...")
+            stats["last_error"] = str(exc)
+            stats["is_consuming"] = False
+            if consumer:
+                try:
+                    consumer.close()
+                except Exception:
+                    pass
+                consumer = None
+            time.sleep(5)
+
+    if consumer:
+        logger.info("Closing Kafka consumer on thread shutdown...")
+        try:
             consumer.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI startup and consumer thread shutdown."""
     global consumer_running, consumer_thread
+    logger.info(f"Starting Consumer Application on port {PORT}...")
     consumer_running = True
     consumer_thread = threading.Thread(target=run_consumer_loop, daemon=True)
     consumer_thread.start()
