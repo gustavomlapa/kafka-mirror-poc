@@ -51,8 +51,38 @@ sed \
     -e "s|\${TARGET_BOOTSTRAP_SERVERS}|${CLUSTER2_BOOTSTRAP}|g" \
     "${TEMPLATE_FILE}" > "${GENERATED_PROPS}"
 
-log_info "1. Uploading MirrorMaker 2.0 properties to VM '${MM2_VM_NAME}'..."
-gcloud compute scp "${GENERATED_PROPS}" "${MM2_VM_NAME}:/tmp/connect-mirror-maker.properties" \
+# Create a clean standalone execution script to run on the VM
+RUN_SCRIPT="${SCRIPT_DIR}/run_mm2_service.sh"
+cat << 'EOF' > "${RUN_SCRIPT}"
+#!/usr/bin/env bash
+set -e
+
+echo "[1/4] Moving configuration to /opt/kafka/config..."
+mkdir -p /opt/kafka/config
+mv /tmp/connect-mirror-maker.properties /opt/kafka/config/connect-mirror-maker.properties
+
+echo "[2/4] Stopping any existing MirrorMaker process..."
+pkill -f 'connect-mirror-maker' || true
+sleep 1
+
+echo "[3/4] Launching MirrorMaker 2.0 process in the background..."
+nohup /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/connect-mirror-maker.properties </dev/null >/var/log/mirrormaker.log 2>&1 &
+
+echo "[4/4] Verifying process startup..."
+sleep 3
+if pgrep -f 'connect-mirror-maker' >/dev/null; then
+    echo "MirrorMaker 2.0 daemon is RUNNING (PID: $(pgrep -f 'connect-mirror-maker' | tr '\n' ' '))"
+else
+    echo "WARNING: MirrorMaker 2.0 process not detected in process list. Check logs below:"
+fi
+echo "--- Initial log lines (/var/log/mirrormaker.log) ---"
+head -n 25 /var/log/mirrormaker.log 2>/dev/null || true
+echo "---------------------------------------------------"
+EOF
+chmod +x "${RUN_SCRIPT}"
+
+log_info "1. Uploading MirrorMaker 2.0 configuration and runner script to VM '${MM2_VM_NAME}'..."
+gcloud compute scp "${GENERATED_PROPS}" "${RUN_SCRIPT}" "${MM2_VM_NAME}:/tmp/" \
     --zone="${ZONE}" \
     --project="${PROJECT_ID}" \
     --tunnel-through-iap
@@ -62,15 +92,10 @@ gcloud compute ssh "${MM2_VM_NAME}" \
     --zone="${ZONE}" \
     --project="${PROJECT_ID}" \
     --tunnel-through-iap \
-    --command="sudo mv /tmp/connect-mirror-maker.properties /opt/kafka/config/connect-mirror-maker.properties && \
-               sudo pkill -f 'connect-mirror-maker' || true && \
-               sudo bash -c 'nohup /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/connect-mirror-maker.properties > /var/log/mirrormaker.log 2>&1 &' && \
-               sleep 3 && \
-               sudo head -n 20 /var/log/mirrormaker.log || true"
+    --command="sudo bash /tmp/run_mm2_service.sh"
 
-log_success "MirrorMaker 2.0 replication started successfully in the background!"
+log_success "MirrorMaker 2.0 replication command executed successfully!"
 
 echo ""
 log_info "To view live MirrorMaker 2 replication logs, run:"
 echo -e "${YELLOW}gcloud compute ssh ${MM2_VM_NAME} --zone=${ZONE} --project=${PROJECT_ID} --tunnel-through-iap --command=\"sudo tail -f /var/log/mirrormaker.log\"${NC}"
-
