@@ -81,7 +81,7 @@ gcloud run deploy "${PRODUCER_SERVICE_NAME}" \
     --min-instances=1 \
     --max-instances=2 \
     --port=8080 \
-    --startup-cpu-boost \
+    --cpu-boost \
     --timeout=300s \
     --allow-unauthenticated
 
@@ -101,7 +101,7 @@ gcloud run deploy "${CONSUMER_SERVICE_NAME}" \
     --min-instances=1 \
     --max-instances=1 \
     --port=8080 \
-    --startup-cpu-boost \
+    --cpu-boost \
     --timeout=300s \
     --allow-unauthenticated
 
