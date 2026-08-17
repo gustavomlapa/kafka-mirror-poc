@@ -1,12 +1,19 @@
-"""Google Cloud IAM OAuth Token Provider for Apache Kafka SASL/OAUTHBEARER authentication.
+"""Google Cloud IAM OAuth Token Provider for Managed Service for Apache Kafka.
 
-This module provides callbacks and token generators using Google Cloud Application
-Default Credentials (ADC) for Python Kafka clients (such as confluent-kafka).
+Constructs the specialized 3-part JWT format required by Google Managed Kafka:
+  Header:  {"typ": "JWT", "alg": "GOOG_OAUTH2_TOKEN"}
+  Payload: {"exp": <expiry>, "iat": <now>, "iss": "Google", "sub": "<principal/service_account>"}
+  Token:   <google_access_token>
 """
 
+import base64
+import datetime
+import json
 import logging
+import os
 import time
 from typing import Optional, Tuple
+
 import google.auth
 import google.auth.transport.requests
 
@@ -14,90 +21,104 @@ logger = logging.getLogger("gcp_kafka_auth")
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
-_global_token_provider: Optional["GCPTokenProvider"] = None
+
+def urlsafe_b64encode_nopad(source: str) -> str:
+    """Base64 URL encodes string without trailing '=' padding."""
+    return base64.urlsafe_b64encode(source.encode("utf-8")).decode("utf-8").rstrip("=")
 
 
 class GCPTokenProvider:
-    """Manages acquisition and refresh of Google Cloud OAuth2 access tokens
+    """Generates the GOOG_OAUTH2_TOKEN formatted bearer token for Google Managed Kafka."""
 
-    for SASL/OAUTHBEARER Kafka authentication.
-    """
+    HEADER = json.dumps({"typ": "JWT", "alg": "GOOG_OAUTH2_TOKEN"})
 
-    def __init__(self, scopes: Optional[list] = None):
-        self.scopes = scopes or [CLOUD_PLATFORM_SCOPE]
+    def __init__(self, principal: Optional[str] = None):
+        self.principal = principal or os.getenv("GOOGLE_MANAGED_KAFKA_AUTH_PRINCIPAL") or os.getenv("SERVICE_ACCOUNT_EMAIL")
         self._credentials = None
         self._request = google.auth.transport.requests.Request()
-        self._cached_token: Optional[str] = None
+        self._cached_jwt: Optional[str] = None
         self._cached_expiry: float = 0.0
-        self._initialize_credentials()
+        self._initialize()
 
-    def _initialize_credentials(self):
+    def _initialize(self):
         try:
-            self._credentials, _ = google.auth.default(scopes=self.scopes)
-            logger.info("Successfully loaded Google Application Default Credentials.")
+            self._credentials, _ = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
+            logger.info("Loaded Google Application Default Credentials.")
         except Exception as exc:
-            logger.warning(
-                f"Warning loading default credentials with custom scopes: {exc}. Trying default fallback..."
-            )
-            try:
-                self._credentials, _ = google.auth.default()
-                logger.info("Loaded fallback Google Application Default Credentials.")
-            except Exception as e2:
-                logger.error(f"Failed to load Google Cloud credentials: {e2}")
-                raise
+            logger.warning(f"Default auth loading warning: {exc}. Retrying without scopes...")
+            self._credentials, _ = google.auth.default()
 
-    def get_token(self) -> Tuple[str, float]:
-        """Fetches a valid GCP OAuth2 access token and its expiry timestamp.
+    def _get_principal(self) -> str:
+        if self.principal:
+            return self.principal
+        # Try finding email from credentials
+        email = getattr(self._credentials, "service_account_email", None)
+        if email and email != "default":
+            return email
+        # Fallback to service account from env or generic placeholder
+        return os.getenv("SERVICE_ACCOUNT_EMAIL", "sa-kafka-poc@poc-kafka-mirror.iam.gserviceaccount.com")
 
-        Returns:
-            Tuple[str, float]: (access_token_string, expiry_epoch_seconds)
-        """
-        now = time.time()
-        # Return cached token if valid for at least another 60 seconds
-        if self._cached_token and self._cached_expiry > (now + 60):
-            return self._cached_token, self._cached_expiry
-
+    def _get_valid_credentials(self):
         if not self._credentials:
-            self._initialize_credentials()
+            self._initialize()
+        if not self._credentials.valid or not self._credentials.token:
+            self._credentials.refresh(self._request)
+        return self._credentials
+
+    def get_token(self, *args, **kwargs) -> Tuple[str, float]:
+        """Returns the encoded (GOOG_OAUTH2_TOKEN_JWT, expiry_epoch_seconds) tuple."""
+        now = time.time()
+        # Return cached token if still valid for 60 seconds
+        if self._cached_jwt and self._cached_expiry > (now + 60):
+            return self._cached_jwt, self._cached_expiry
 
         try:
-            if not self._credentials.valid or not self._credentials.token:
-                self._credentials.refresh(self._request)
-                logger.info("Acquired fresh Google Cloud OAuth access token.")
+            creds = self._get_valid_credentials()
 
-            token = self._credentials.token
-            if not token:
-                raise ValueError("Credentials refreshed but token is empty.")
-
-            if self._credentials.expiry:
-                expiry_seconds = float(self._credentials.expiry.timestamp())
+            if creds.expiry:
+                if creds.expiry.tzinfo is None:
+                    exp_utc = creds.expiry.replace(tzinfo=datetime.timezone.utc)
+                else:
+                    exp_utc = creds.expiry
+                expiry_seconds = float(exp_utc.timestamp())
             else:
                 expiry_seconds = now + 3600.0
 
-            self._cached_token = token
+            sub = self._get_principal()
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+
+            payload_dict = {
+                "exp": int(expiry_seconds),
+                "iat": int(now_dt.timestamp()),
+                "iss": "Google",
+                "sub": sub,
+            }
+            payload_json = json.dumps(payload_dict)
+
+            # Construct 3-part GOOG_OAUTH2_TOKEN string:
+            # header.payload.google_access_token
+            formatted_token = ".".join([
+                urlsafe_b64encode_nopad(self.HEADER),
+                urlsafe_b64encode_nopad(payload_json),
+                urlsafe_b64encode_nopad(creds.token),
+            ])
+
+            self._cached_jwt = formatted_token
             self._cached_expiry = expiry_seconds
-            return token, expiry_seconds
+            logger.info(f"Generated GOOG_OAUTH2_TOKEN for principal: {sub}")
+            return formatted_token, expiry_seconds
 
         except Exception as exc:
-            logger.error(f"Error fetching Google Cloud OAuth token: {exc}")
-            # If we had a cached token, fallback to it to avoid breaking C thread
-            if self._cached_token:
-                logger.warning("Using existing cached token as fallback.")
-                return self._cached_token, now + 300.0
+            logger.error(f"Error creating Kafka GOOG_OAUTH2_TOKEN: {exc}")
+            if self._cached_jwt:
+                return self._cached_jwt, now + 120.0
             raise
 
 
-def confluent_oauth_callback(*args, **kwargs) -> Tuple[str, float]:
-    """Callback function compatible with confluent_kafka's oauth_cb configuration.
+_global_provider = GCPTokenProvider()
 
-    Accepts any arguments passed by librdkafka (e.g. oauth_config string) and returns
-    (token_str, expiry_time_in_seconds).
-    """
-    global _global_token_provider
-    try:
-        if _global_token_provider is None:
-            _global_token_provider = GCPTokenProvider()
-        return _global_token_provider.get_token()
-    except Exception as e:
-        logger.error(f"Exception inside confluent_oauth_callback: {e}")
-        raise
+
+def confluent_oauth_callback(*args, **kwargs) -> Tuple[str, float]:
+    """Callback method for confluent-kafka oauth_cb."""
+    global _global_provider
+    return _global_provider.get_token(*args, **kwargs)

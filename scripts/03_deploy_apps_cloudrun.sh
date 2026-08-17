@@ -77,11 +77,12 @@ gcloud run deploy "${PRODUCER_SERVICE_NAME}" \
     --subnet="${SUBNET_NAME}" \
     --vpc-egress="all-traffic" \
     --service-account="${SERVICE_ACCOUNT_EMAIL}" \
-    --set-env-vars="KAFKA_BOOTSTRAP_SERVERS=${CLUSTER1_BOOTSTRAP},KAFKA_TOPIC=${TOPIC_NAME},KAFKA_AUTH_TYPE=OAUTHBEARER,AUTO_STREAM=true,STREAM_INTERVAL_SECONDS=3" \
+    --set-env-vars="KAFKA_BOOTSTRAP_SERVERS=${CLUSTER1_BOOTSTRAP},KAFKA_TOPIC=${TOPIC_NAME},KAFKA_AUTH_TYPE=OAUTHBEARER,AUTO_STREAM=true,STREAM_INTERVAL_SECONDS=3,SERVICE_ACCOUNT_EMAIL=${SERVICE_ACCOUNT_EMAIL},GOOGLE_MANAGED_KAFKA_AUTH_PRINCIPAL=${SERVICE_ACCOUNT_EMAIL}" \
     --min-instances=1 \
     --max-instances=2 \
     --port=8080 \
     --cpu-boost \
+    --no-cpu-throttling \
     --timeout=300s \
     --allow-unauthenticated
 
@@ -97,11 +98,12 @@ gcloud run deploy "${CONSUMER_SERVICE_NAME}" \
     --subnet="${SUBNET_NAME}" \
     --vpc-egress="all-traffic" \
     --service-account="${SERVICE_ACCOUNT_EMAIL}" \
-    --set-env-vars="KAFKA_BOOTSTRAP_SERVERS=${CLUSTER1_BOOTSTRAP},KAFKA_TOPIC=${TOPIC_NAME},KAFKA_GROUP_ID=${CONSUMER_GROUP},KAFKA_AUTH_TYPE=OAUTHBEARER,KAFKA_AUTO_OFFSET_RESET=earliest" \
+    --set-env-vars="KAFKA_BOOTSTRAP_SERVERS=${CLUSTER1_BOOTSTRAP},KAFKA_TOPIC=${TOPIC_NAME},KAFKA_GROUP_ID=${CONSUMER_GROUP},KAFKA_AUTH_TYPE=OAUTHBEARER,KAFKA_AUTO_OFFSET_RESET=earliest,SERVICE_ACCOUNT_EMAIL=${SERVICE_ACCOUNT_EMAIL},GOOGLE_MANAGED_KAFKA_AUTH_PRINCIPAL=${SERVICE_ACCOUNT_EMAIL}" \
     --min-instances=1 \
     --max-instances=1 \
     --port=8080 \
     --cpu-boost \
+    --no-cpu-throttling \
     --timeout=300s \
     --allow-unauthenticated
 

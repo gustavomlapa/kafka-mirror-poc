@@ -69,6 +69,8 @@ fi
 log_info "5. Granting IAM Roles to Service Account..."
 ROLES=(
     "roles/managedkafka.client"
+    "roles/iam.serviceAccountTokenCreator"
+    "roles/iam.serviceAccountOpenIdTokenCreator"
     "roles/run.invoker"
     "roles/artifactregistry.reader"
     "roles/logging.logWriter"
