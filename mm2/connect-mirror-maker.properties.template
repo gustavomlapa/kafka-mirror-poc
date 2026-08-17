@@ -1,0 +1,48 @@
+# ==============================================================================
+# Apache Kafka MirrorMaker 2.0 Configuration for Google Cloud Managed Kafka
+# Pattern 1: Default Topic Replication Policy (Prefix: <source-alias>.<topic>)
+# Reference: https://docs.cloud.google.com/managed-service-for-apache-kafka/docs/move-kafka-mirrormaker
+# ==============================================================================
+
+# 1. Cluster Aliases
+clusters = source, target
+
+# 2. Source Cluster Definition (GMSAK Cluster 1)
+source.bootstrap.servers = ${SOURCE_BOOTSTRAP_SERVERS}
+source.security.protocol = SASL_SSL
+source.sasl.mechanism = OAUTHBEARER
+source.sasl.login.callback.handler.class = com.google.cloud.hosted.kafka.auth.GcpLoginCallbackHandler
+source.sasl.jaas.config = org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;
+
+# 3. Target Cluster Definition (GMSAK Cluster 2)
+target.bootstrap.servers = ${TARGET_BOOTSTRAP_SERVERS}
+target.security.protocol = SASL_SSL
+target.sasl.mechanism = OAUTHBEARER
+target.sasl.login.callback.handler.class = com.google.cloud.hosted.kafka.auth.GcpLoginCallbackHandler
+target.sasl.jaas.config = org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;
+
+# 4. Replication Flow
+source->target.enabled = true
+source->target.topics = .*
+source->target.groups = .*
+target->source.enabled = false
+
+# 5. Offset Synchronization & Checkpoints
+emit.checkpoints.enabled = true
+emit.checkpoints.interval.seconds = 5
+sync.group.offsets.enabled = true
+sync.group.offsets.interval.seconds = 5
+emit.heartbeats.enabled = true
+emit.heartbeats.interval.seconds = 5
+
+# 6. Replication Factor for internal and replicated topics
+replication.factor = 3
+checkpoints.topic.replication.factor = 3
+heartbeats.topic.replication.factor = 3
+offset-syncs.topic.replication.factor = 3
+offset.storage.replication.factor = 3
+status.storage.replication.factor = 3
+config.storage.replication.factor = 3
+
+# 7. Default Replication Policy (creates 'source.<topic_name>')
+replication.policy.class = org.apache.kafka.connect.mirror.DefaultReplicationPolicy
