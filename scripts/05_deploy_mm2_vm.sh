@@ -18,8 +18,9 @@ if [[ "${VM_EXISTS}" != "NOT_FOUND" ]]; then
 else
     log_info "Creating Compute Engine VM '${MM2_VM_NAME}' in zone '${ZONE}'..."
 
-    # Create startup script to install Java 17, Apache Kafka binaries, and GCP Auth Login Handler with all dependencies
-    STARTUP_SCRIPT=$(cat <<EOF
+    # Write startup script to a file to avoid gcloud comma/dictionary syntax parsing issues
+    STARTUP_SCRIPT_FILE="${SCRIPT_DIR}/.mm2_startup_script.sh"
+    cat << EOF > "${STARTUP_SCRIPT_FILE}"
 #!/usr/bin/env bash
 set -e
 
@@ -35,7 +36,7 @@ if [ ! -d "\${KAFKA_DIR}" ]; then
     rm kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz
 fi
 
-# Download Google Cloud Managed Kafka Auth Login Handler and all its transitive dependencies (like JsonFactory, google-auth, etc.)
+# Download Google Cloud Managed Kafka Auth Login Handler and all transitive dependencies
 mkdir -p /tmp/kafka-auth-deps
 cat << 'POM' > /tmp/kafka-auth-deps/pom.xml
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -53,11 +54,10 @@ cat << 'POM' > /tmp/kafka-auth-deps/pom.xml
 </project>
 POM
 
-mvn -f /tmp/kafka-auth-deps/pom.xml dependency:copy-dependencies -DoutputDirectory="\${KAFKA_DIR}/libs"
+mvn -f /tmp/kafka-auth-deps/pom.xml dependency:copy-dependencies -DoutputDirectory="\${KAFKA_DIR}/libs" -q
 
 echo "MirrorMaker 2 VM setup completed at \$(date)" >> /var/log/mm2-startup.log
 EOF
-)
 
     gcloud compute instances create "${MM2_VM_NAME}" \
         --project="${PROJECT_ID}" \
@@ -69,8 +69,10 @@ EOF
         --scopes="https://www.googleapis.com/auth/cloud-platform" \
         --image-family="debian-12" \
         --image-project="debian-cloud" \
-        --metadata=startup-script="${STARTUP_SCRIPT}" \
+        --metadata-from-file=startup-script="${STARTUP_SCRIPT_FILE}" \
         --description="Compute Engine VM dedicated to running Apache Kafka MirrorMaker 2.0"
+
+    rm -f "${STARTUP_SCRIPT_FILE}"
 
     log_success "Compute Engine VM '${MM2_VM_NAME}' created."
     log_info "Waiting 30 seconds for startup script to finish downloading Kafka and GCP dependencies..."
