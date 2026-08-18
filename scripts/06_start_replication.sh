@@ -57,18 +57,42 @@ cat << 'EOF' > "${RUN_SCRIPT}"
 #!/usr/bin/env bash
 set -e
 
-echo "[1/4] Moving configuration to /opt/kafka/config..."
+echo "[1/5] Ensuring Google Managed Kafka Auth dependencies exist in /opt/kafka/libs..."
+if ! ls /opt/kafka/libs/google-api-client* 1>/dev/null 2>&1; then
+    echo "Downloading Google Auth Handler transitive dependencies via Maven..."
+    apt-get update -qq && apt-get install -y -qq maven
+    mkdir -p /tmp/kafka-auth-deps
+    cat << 'POM' > /tmp/kafka-auth-deps/pom.xml
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.poc</groupId>
+  <artifactId>kafka-auth-downloader</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.cloud.hosted.kafka</groupId>
+      <artifactId>managed-kafka-auth-login-handler</artifactId>
+      <version>1.0.6</version>
+    </dependency>
+  </dependencies>
+</project>
+POM
+    mvn -f /tmp/kafka-auth-deps/pom.xml dependency:copy-dependencies -DoutputDirectory="/opt/kafka/libs" -q
+    echo "Dependencies successfully copied to /opt/kafka/libs."
+fi
+
+echo "[2/5] Moving configuration to /opt/kafka/config..."
 mkdir -p /opt/kafka/config
 mv /tmp/connect-mirror-maker.properties /opt/kafka/config/connect-mirror-maker.properties
 
-echo "[2/4] Stopping any existing MirrorMaker process..."
+echo "[3/5] Stopping any existing MirrorMaker process..."
 pkill -f 'connect-mirror-maker' || true
 sleep 1
 
-echo "[3/4] Launching MirrorMaker 2.0 process in the background..."
+echo "[4/5] Launching MirrorMaker 2.0 process in the background..."
 nohup /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/connect-mirror-maker.properties </dev/null >/var/log/mirrormaker.log 2>&1 &
 
-echo "[4/4] Verifying process startup..."
+echo "[5/5] Verifying process startup..."
 sleep 3
 if pgrep -f 'connect-mirror-maker' >/dev/null; then
     echo "MirrorMaker 2.0 daemon is RUNNING (PID: $(pgrep -f 'connect-mirror-maker' | tr '\n' ' '))"

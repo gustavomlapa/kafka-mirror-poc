@@ -218,9 +218,41 @@ Você verá o `bootstrap_servers` apontando para o Cluster 2 e a contagem de men
 
 ---
 
-### Passo 8: Limpeza de Recursos (Teardown)
+### Passo 8 (Opcional): Failback / Rollback para o Cluster 1
 
-Após concluir todos os testes da POC, execute o script de limpeza para evitar custos residuais no projeto GCP:
+Se desejar testar o processo de retorno (rollback) das aplicações para o **Cluster 1**:
+
+```bash
+./scripts/08_failback_to_cluster1.sh
+```
+
+#### O que o script de failback faz:
+1. Interrompe o processo do MirrorMaker 2 na VM para evitar replicação cruzada.
+2. Atualiza o Producer e o Consumer no Cloud Run de volta para o **Cluster 1**.
+3. Exibe o status atualizado do Consumer lendo novamente do Cluster 1.
+
+---
+
+### Passo 9 (Opcional): Reset dos Dados e Estado para Re-executar a POC
+
+Se você quiser rodar a demonstração inteira de novo do zero (sem precisar destruir e recriar clusters, VPC ou imagens):
+
+```bash
+./scripts/09_reset_poc_data.sh
+```
+
+#### O que o script de reset faz:
+1. **Para o MirrorMaker 2** na VM e limpa os arquivos de log.
+2. **Recria o tópico `orders-poc` no Cluster 1** limpo (com 0 mensagens e offsets zerados).
+3. **Limpa todos os tópicos no Cluster 2** (incluindo tópicos internos de replicação do MM2 como `checkpoints` e `heartbeats`).
+4. **Reinicia os containers do Producer e Consumer no Cloud Run** apontando para o Cluster 1 com contadores zerados.
+5. Deixa o ambiente pronto para você reexecutar o fluxo a partir do **Passo 3 ao Passo 7**.
+
+---
+
+### Passo 10: Limpeza de Recursos (Teardown)
+
+Após concluir todos os testes da POC, execute o script de limpeza para destruir toda a infraestrutura e evitar custos residuais no projeto GCP:
 ```bash
 ./scripts/99_teardown.sh
 ```

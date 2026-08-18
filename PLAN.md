@@ -15,5 +15,8 @@
 - [x] In `scripts/06_start_replication.sh`, create script to upload properties and launch MirrorMaker 2.0 replication.
 - [x] In `scripts/07_cutover_apps.sh`, create script to update Cloud Run environment variables for Producer and Consumer to target `cluster2`.
 - [x] In `scripts/99_teardown.sh`, create script to clean up all GCP resources created in the POC.
-- [x] In `docs/MIGRATION_GUIDE.md` and `docs/LOCAL_RUN_GUIDE.md`, document the deep-dive migration concepts and local execution instructions.
 - [x] In `README.md`, provide an exhaustive walkthrough in Portuguese and English explaining the POC architecture, manual step-by-step execution, and what changes in apps during cutover.
+- [x] In `scripts/08_failback_to_cluster1.sh`, create script to switch Producer and Consumer on Cloud Run back to Cluster 1.
+- [x] In `scripts/09_reset_poc_data.sh`, create script to stop MirrorMaker, recreate clean topics, purge MM2 metadata, and reset Cloud Run workloads to Cluster 1.
+- [x] In `README.md`, update execution instructions and script tables with the new failback and reset workflows.
+

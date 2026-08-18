@@ -18,13 +18,13 @@ if [[ "${VM_EXISTS}" != "NOT_FOUND" ]]; then
 else
     log_info "Creating Compute Engine VM '${MM2_VM_NAME}' in zone '${ZONE}'..."
 
-    # Create startup script to install Java 17, Apache Kafka binaries, and GCP Auth Login Handler
+    # Create startup script to install Java 17, Apache Kafka binaries, and GCP Auth Login Handler with all dependencies
     STARTUP_SCRIPT=$(cat <<EOF
 #!/usr/bin/env bash
 set -e
 
 apt-get update
-apt-get install -y openjdk-17-jre-headless wget curl tar
+apt-get install -y openjdk-17-jre-headless maven wget curl tar
 
 KAFKA_DIR="/opt/kafka"
 if [ ! -d "\${KAFKA_DIR}" ]; then
@@ -35,12 +35,25 @@ if [ ! -d "\${KAFKA_DIR}" ]; then
     rm kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz
 fi
 
-# Download Google Cloud Managed Kafka Auth Login Handler JAR into Kafka libs
-cd "\${KAFKA_DIR}/libs"
-AUTH_HANDLER_URL="https://repo1.maven.org/maven2/com/google/cloud/hosted/kafka/managed-kafka-auth-login-handler/${GCP_AUTH_HANDLER_VERSION}/managed-kafka-auth-login-handler-${GCP_AUTH_HANDLER_VERSION}-shaded.jar"
-if [ ! -f "managed-kafka-auth-login-handler-${GCP_AUTH_HANDLER_VERSION}-shaded.jar" ]; then
-    wget -q "\${AUTH_HANDLER_URL}" || wget -q "https://repo1.maven.org/maven2/com/google/cloud/hosted/kafka/managed-kafka-auth-login-handler/${GCP_AUTH_HANDLER_VERSION}/managed-kafka-auth-login-handler-${GCP_AUTH_HANDLER_VERSION}.jar"
-fi
+# Download Google Cloud Managed Kafka Auth Login Handler and all its transitive dependencies (like JsonFactory, google-auth, etc.)
+mkdir -p /tmp/kafka-auth-deps
+cat << 'POM' > /tmp/kafka-auth-deps/pom.xml
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.poc</groupId>
+  <artifactId>kafka-auth-downloader</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.cloud.hosted.kafka</groupId>
+      <artifactId>managed-kafka-auth-login-handler</artifactId>
+      <version>${GCP_AUTH_HANDLER_VERSION}</version>
+    </dependency>
+  </dependencies>
+</project>
+POM
+
+mvn -f /tmp/kafka-auth-deps/pom.xml dependency:copy-dependencies -DoutputDirectory="\${KAFKA_DIR}/libs"
 
 echo "MirrorMaker 2 VM setup completed at \$(date)" >> /var/log/mm2-startup.log
 EOF
